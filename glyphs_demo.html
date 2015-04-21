@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<title>PARAS Web App</title>
+		<script src="http://d3js.org/d3.v3.min.js" charset="utf-8"></script>
+		<script src="https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js"></script> 
+		<style>
+		#Glyph {
+			display: flex;
+			display: -webkit-flex;
+			height: 100%;
+		}
+
+		body {
+			height: 1000px;
+		}
+		</style>
+		<script type="text/javascript">
+			var w = 1000;
+			var h = 1000;
+			var padding = 10;
+			var svg;
+			var columns;
+			var transitionStagger = 150;
+			var transitionTime = 400;
+			var color = "#0088aa";
+			var antcolor = "#bb0000";
+			var bgColor = "#333333"
+			var selected = { element: null, data: null };
+			var scale;
+			var demoHeight = 200;
+			var lastDemo;
+			var demoPadding = 15;
+			var demoScale = demoHeight/2-2*demoPadding;
+
+
+			//Random data
+			// [{index: 0, scale: .9}, ...]
+			var rays = 19;
+			var num = 40;
+			var values = 5;
+			var minVal = 0;
+			var dataset = [];
+			var demoGlyph = [];
+			var attributes = [];
+
+			function getRandomInt (min, max) {
+			return Math.floor(Math.random() * (max - min + 1)) + min;
+			}
+
+			for(var q = 0; q <= rays; ++q){
+			demoGlyph.push({index: 1, scale:1, pathScale:1, antecedent: false});
+			attributes.push("Test");
+			}
+
+			for(var i = 0; i < num; ++i){
+			var curGlyph = [];
+			var first;
+			var anteFound = false;
+
+			for(var j = 0; j < rays; ++j) {
+			var curRay = {index: i, scale: getRandomInt(0, values)/values, antecedent: false};
+			if(j == 0) {
+				first = curRay;
+			}
+			if( curRay.scale > 0 && !anteFound) {
+				curRay.antecedent = true;
+				anteFound = true;
+			}
+			curGlyph.push(curRay);
+			}
+
+			//handle outer edges
+			//This is done to connect non-sequential rays with an outer path
+			//When a ray has a value of 0, we calculate it's length
+			//by interpolating based on the closest nonzero rays
+			for(var j = 0; j < curGlyph.length; ++j) {
+			    var nextVal;
+			    var nextDist = 0;
+			    var prevVal;
+			    var prevDist = 0;
+			    var k = j;
+			    //for any rays of length 0
+			    if(curGlyph[j].scale == 0){
+			            //we first have to locate the closest nonzero rays for 
+			            //interpolating
+			            while(nextDist < curGlyph.length) {
+			                    nextDist++;
+			                    k++;
+			                    if(k == curGlyph.length) k = 0;
+			                    if (curGlyph[k].scale > 0){
+			                            nextVal = curGlyph[k].scale;
+			                            break;
+			                    }
+			            }
+			            k = j;
+			            while(prevDist < curGlyph.length) {
+			                    prevDist++;
+			                    k--;
+			                    if(k < 0) k = curGlyph.length-1;
+			                    if (curGlyph[k].scale > 0){
+			                            prevVal = curGlyph[k].scale;
+			                            break;
+			                    }
+			            }
+			            var totalDist = nextDist+prevDist;
+			            //we don't interpolate if they are 180 degrees apart or more
+			            if(totalDist*2 >= curGlyph.length) {
+			                    curGlyph[j].pathScale = 0;
+			            } else {
+			                    //Calculate angles to sides
+			                    var nextAngle = toRadians(nextDist/curGlyph.length*360);
+			                    var prevAngle = toRadians(prevDist/curGlyph.length*360);
+			                    //use SAS and ASA theorems to find interpolated length
+			                    var totalAngle = toRadians((nextDist+prevDist)/curGlyph.length*360);
+			                    var denominator = Math.sqrt(Math.pow(nextVal, 2)+Math.pow(prevVal, 2) - 2*nextVal*prevVal*Math.cos(totalAngle));
+			                    var nextSideAngle = Math.asin(prevVal*Math.sin(totalAngle)/denominator);
+			                    var midLength = Math.sin(nextSideAngle)/Math.sin(Math.PI - nextAngle- nextSideAngle)*nextVal
+			                    curGlyph[j].pathScale = midLength;
+			            }
+			    } else {
+			        curGlyph[j].pathScale = curGlyph[j].scale;
+			    }
+			}
+
+			curGlyph.push(first);
+			dataset.push(curGlyph);
+			}
+
+			//Determine scale and layout
+			function calculateScale() {
+			h = $(window).height()-2*padding-demoHeight;
+			w = $(window).width()-2*padding;
+			var area;
+
+			//we only rescale glyphs if needed
+			area = w*h/dataset.length;
+			scale = Math.floor(Math.sqrt(area));
+			scale -= (padding*2);
+			columns = Math.floor(w/(scale+padding));
+			normalizeSize();
+			scale = scale/2;
+			}
+
+			function normalizeSize() {
+			rows = h/(scale+padding)/2;
+			var actualColumns = rows/columns;
+			actualRows = dataset.length/columns;
+
+			if(actualRows < rows){
+			console.log("Adjusting for columns!");
+			columns = actualColumns;
+			}
+			}
+
+			function reinitDemoGlyph(glyph) {
+			var useDemo = false;
+			lastDemo = glyph;
+
+			if(!glyph) {
+			glyph = demoGlyph;
+			useDemo = true;
+			}
+
+			/******** Get Glyph  ********/
+			var raySelection = svg.select(".demoGlyph");
+
+			/********* Draw Rays ******/
+
+			var xVal = demoPadding + demoScale;
+			var yVal = h-demoScale+demoHeight-demoPadding;
+
+			/******* generate outer paths ********/
+			var lineFunction = d3.svg.line()
+								.x(function(d,i) { return xVal + xToCircle(i,rays)/scale*demoScale*d.pathScale; })
+								.y(function(d,i) { return yVal + yToCircle(i,rays)/scale*demoScale*d.pathScale; })
+								.interpolate("linear");
+
+			var demoGlyphArr = [glyph];
+			var pathSelection = svg.select(".demoGlyph")
+			.data(demoGlyphArr)
+			.select("path")
+				.transition()
+				.attr("d", lineFunction);
+
+			raySelection = raySelection.selectAll(".glyphLine");
+			//add glyph lines
+			raySelection
+			.data(glyph);
+
+			raySelection
+			.transition()
+			.attr("stroke", function(d) { return d.antecedent ? antcolor : color})
+			.attr("x1", function(d,i,j) { return xVal; })
+			.attr("y1", function(d,i,j) { return yVal; })
+			.attr("x2", function(d,i,j) { if(i == rays) return xVal; return xVal + xToCircle(i,rays)/scale*demoScale*d.scale; })
+			.attr("y2", function(d,i,j) { if(i == rays) return yVal; return yVal + yToCircle(i,rays)/scale*demoScale*d.scale;} );
+
+			/******* Add Text Labels ********/
+			raySelection.select(".demoGlyphLabel")
+			//.transition()
+			.attr("x", function(d,i,j) { console.log("yo"); return xVal + xToCircle(i,rays)/scale*demoScale*1*1.2; })
+			.attr("y", function(d,i,j) { return yVal + yToCircle(i,rays)/scale*demoScale*1*1.2;} )
+			.text(function(d, i){return (i == rays) ? "" : i});
+			}
+
+			function initDemoGlyph(glyph) {
+			var useDemo = false;
+			lastDemo = glyph;
+
+			if(!glyph) {
+			glyph = demoGlyph;
+			useDemo = true;
+			}
+
+			svg.selectAll(".demoGlyph").remove();
+			svg.selectAll(".demoGlyph_bg").remove();
+
+
+			/********* Generate background ******/
+
+			var raySelection = svg
+			.append("g")
+			.classed("demoGlyph_bg", true);
+
+			raySelection = raySelection.selectAll(".glyphLine_bg")
+			//add glyph lines
+			.data(demoGlyph)
+			.enter();
+
+			var xVal = demoPadding + demoScale;
+			var yVal = h-demoScale+demoHeight-demoPadding;
+
+			raySelection.append("line")
+			.attr("stroke", "#555555")
+			.attr("stroke-width", 1)
+			.classed("glyphLine", true)
+			.attr("x1", function(d,i,j) { return xVal; })
+			.attr("y1", function(d,i,j) { return yVal; })
+			.attr("x2", function(d,i,j) { if(i == rays) return xVal; return xVal + xToCircle(i,rays)/scale*demoScale*d.scale; })
+			.attr("y2", function(d,i,j) { if(i == rays) return yVal; return yVal + yToCircle(i,rays)/scale*demoScale*d.scale;} );
+
+			/******** Get Glyph  ********/
+			var raySelection = svg
+			.append("g")
+			.classed("demoGlyph", true);
+
+			/********* Draw Rays ******/
+
+			raySelection = raySelection.selectAll(".glyphLine")
+			//add glyph lines
+			.data(glyph)
+			.enter();
+
+			var xVal = demoPadding + demoScale;
+			var yVal = h-demoScale+demoHeight-demoPadding;
+
+			/******* generate outer paths ********/
+			var lineFunction = d3.svg.line()
+								.x(function(d,i) { return xVal + xToCircle(i,rays)/scale*demoScale*d.scale; })
+								.y(function(d,i) { return yVal + yToCircle(i,rays)/scale*demoScale*d.scale; })
+								.interpolate("linear");
+
+			var demoGlyphArr = [glyph];
+			var pathSelection = svg.selectAll(".demoGlyph")
+			.data(demoGlyphArr)
+			.append("path")
+				.attr("stroke", color)
+				.attr("stroke-width", 2)
+				.attr("fill", bgColor)
+				.attr("d", lineFunction);
+
+			raySelection.append("line")
+			.attr("stroke", function(d) { return d.antecedent ? antcolor : color})
+			.attr("stroke-width", function(d) { return d.antecedent ? 3 : 2})
+			.classed("glyphLine", true)
+			.attr("x1", function(d,i,j) { return xVal; })
+			.attr("y1", function(d,i,j) { return yVal; })
+			.attr("x2", function(d,i,j) { if(i == rays) return xVal; return xVal + xToCircle(i,rays)/scale*demoScale*d.scale; })
+			.attr("y2", function(d,i,j) { if(i == rays) return yVal; return yVal + yToCircle(i,rays)/scale*demoScale*d.scale;} );
+
+			/******* Add Text Labels ********/
+			raySelection.append("text")
+			.attr("fill", "white")
+			.classed("demoGlyphLabel", true)
+			.attr("text-anchor", "middle")
+			.attr("alignment-baseline", "middle")
+			.attr("x", function(d,i,j) { return xVal + xToCircle(i,rays)/scale*demoScale*1*1.2; })
+			.attr("y", function(d,i,j) { return yVal + yToCircle(i,rays)/scale*demoScale*1*1.2;} )
+			.text(function(d, i){return (i == rays) ? "" : i});
+			}
+
+
+			//Create glyph objects
+			function initGlyphs(transTime) {
+			//Create SVG element
+			calculateScale();
+			if(!svg) {
+			svg = d3.select("#Glyph").append("svg")
+				.attr("width", "100%")
+				.attr("height", "100%");
+			}
+
+			//add glyphs
+			svg.selectAll(".glyph").remove();
+
+			/******** Create Glyphs  ********/
+			var raySelection = svg.selectAll(".glyph")
+			.data(dataset)
+			.enter()
+			.append("g")
+			.classed("glyph", true);
+
+			/******* generate outer paths ********/
+			var lineFunction = d3.svg.line()
+								.x(function(d,i) {return xPaddingForGlyph(d.index)+ xToCircle(i,rays)*d.pathScale; })
+								.y(function(d,i) { return yPaddingForGlyph(d.index)+ yToCircle(i,rays)*d.pathScale; })
+								.interpolate("linear");
+
+			var lineFunctionNull = d3.svg.line()
+								.x(function(d,i) { return xPaddingForGlyph(d.index);})
+								.y(function(d,i) { return yPaddingForGlyph(d.index);})
+								.interpolate("linear");
+
+			var pathSelection = svg.selectAll(".glyph")
+			.append("path")
+				.attr("stroke", color)
+				.attr("stroke-width", 2)
+				.attr("fill", bgColor);
+
+			if(transTime > 0) {
+			pathSelection = pathSelection.attr("d", lineFunctionNull)
+				.transition()
+				.duration(transTime)
+			}
+
+			pathSelection.attr("d", lineFunction);
+
+			/******* Draw Rays ********/
+
+			raySelection = raySelection.selectAll(".glyphLine")
+			//add glyph lines
+			.data(function(d) { return d; })
+			.enter()
+			.append("line")
+				.attr("stroke", function(d) { return d.antecedent ? antcolor : color})
+				.attr("stroke-width", 2)
+				.classed("glyphLine", true)
+				.attr("x1", function(d,i,j) { return xPaddingForGlyph(j); })
+				.attr("y1", function(d,i,j) { return yPaddingForGlyph(j); });
+
+			if(transTime > 0) {
+			raySelection = raySelection
+				.attr("x2", function(d,i,j) { return xPaddingForGlyph(j); })
+				.attr("y2", function(d,i,j) { return yPaddingForGlyph(j); })
+				//transition in
+				.transition()
+				.duration(transTime)
+			}
+
+			raySelection.attr("x2", function(d,i,j) { if(i == rays) return xPaddingForGlyph(j); return xPaddingForGlyph(j)+ xToCircle(i,rays)*d.scale; })
+			.attr("y2", function(d,i,j) {if(i == rays) return yPaddingForGlyph(j); return yPaddingForGlyph(j)+yToCircle(i,rays)*d.scale;} );
+
+			/******* generate selection boxes ********/
+			svg.selectAll(".glyph")
+			.append("rect")
+			.attr("x", function(d,i) { return xPaddingForGlyph(i)-scale; })
+			.attr("y", function(d,i) { return yPaddingForGlyph(i)-scale; })
+			.attr("width", scale*2)
+			.attr("height", scale*2)
+			.attr("fill-opacity", 0)
+			.attr("stroke", "#FFFFFF")
+			//the stroke is here for selecting later
+			.attr("selected", function(d) {
+				if(selected.data == d) { 
+					selected.element = d3.select(this); 
+					return true; 
+				} else { 
+					return false; 
+				}
+			})
+			.attr("stroke-opacity", function(d) { return (selected.data == d) ? 1 : 0; })
+			.attr("stroke-width", 3)
+			//sample selection & hover behavior
+			.on("click", function(d, i) { 
+				var t = d3.select(this)
+				if(t.attr("selected") == "true"){
+					//deselect
+					selected.element.attr("selected", false)
+					.attr("stroke-opacity", 0);
+					selected.element = null;
+					selected.data = null;
+					return;
+				}
+				if(selected.element)
+					selected.element.attr("selected", false)
+					.attr("stroke-opacity", 0);
+				selected.element = t;
+				selected.data = d;
+				reinitDemoGlyph(d);
+				t.attr("selected", true)
+					.transition()
+					.attr("stroke-opacity", 1)
+				}) 
+			.on("mouseover", function (d, i) {
+				var t = d3.select(this)
+				if(t.attr("selected") == "true")
+					return;
+				t.transition()
+					.attr("stroke-opacity", .2);
+				reinitDemoGlyph(d);
+				})
+			.on("mouseout", function (d, i) {
+				var t = d3.select(this)
+				if(t.attr("selected") == "true") {
+					return;
+				} else if(!selected.element) {
+					reinitDemoGlyph();
+				} else {
+					reinitDemoGlyph(selected.data);
+				}
+				t.transition()
+					.attr("stroke-opacity", 0);
+				});
+			}
+
+
+			/******* DOM Stuff *********/
+			window.onload = function (e) {
+			initGlyphs(transitionTime);
+			initDemoGlyph();
+			}
+
+			window.onresize = function(event) {
+			initGlyphs(0);
+			initDemoGlyph(lastDemo);
+			}
+
+			/******* Utility Functions *********/
+
+			//return the x value of a point along circle
+			function xToCircle (val, rays) {
+			var x = Math.sin(toRadians(val*360/rays))*scale;
+			return x;
+			}
+
+			//return the y value of a point along circle
+			function yToCircle (val, rays) {
+			var y = Math.cos(toRadians(val*360/rays))*scale;
+			return y;
+			}
+
+			//get center x pos for given glyph index
+			function xPaddingForGlyph(j){
+			var q = j - Math.floor(j/columns)*columns;
+			var x = scale*(q+.5)*2 + padding*(q+1);
+			return x;
+			}
+
+			//get center y pos for given glyph index
+			function yPaddingForGlyph(j){
+			return scale*(Math.floor(j/columns)+.5)*2 + padding*(Math.floor(j/columns)+1);
+			}
+
+			//convert degrees to radians
+			function toRadians (angle) {
+			return angle * (Math.PI / 180);
+			}
+		</script>
+	</head>
+	<body bgcolor = "#222222">
+		<div id = "Glyph"></div>
+	</body>
+</html>
